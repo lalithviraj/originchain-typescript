@@ -321,8 +321,7 @@ export class OriginChainClient {
       headers["x-oc-logical-request-id"] ??= logicalRequestId;
       headers["x-oc-attempt"] ??= "1";
     }
-    const report =
-      this.diagnostics && path.startsWith("/v1/tenants/") ? this.diagnostics : undefined;
+    const report = this.diagnostics;
     const startedAt = now();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);

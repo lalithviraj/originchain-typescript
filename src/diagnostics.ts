@@ -20,6 +20,11 @@ export const DIAGNOSTICS_PATH_SUFFIX = "/diagnostics";
 const MAX_QUEUE = 256;
 const MAX_BATCH = 32;
 const FLUSH_MS = 1000;
+// The engine refuses a whole diagnostics batch for one invalid event, so an event
+// that would break any of these rules is never queued.
+const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const MAX_PATH = 512;
+const MAX_DURATION_MS = 3_600_000;
 
 export type DiagnosticEvent = {
   client: "typescript";
@@ -69,7 +74,8 @@ function classify(status: number): Pick<DiagnosticEvent, "outcome" | "error_cate
   return { outcome: "error", error_category: "unknown" };
 }
 
-/** The event for one finished call. `path` may carry a query string; it is removed here. */
+/** The event for one finished call, or `undefined` when it cannot be reported.
+ * `path` may carry a query string; it is removed here. */
 export function diagnosticEvent(call: {
   method: string;
   path: string;
@@ -79,14 +85,19 @@ export function diagnosticEvent(call: {
   requestId?: string;
   errorCode?: string;
   failure?: "timeout" | "network";
-}): DiagnosticEvent {
+}): DiagnosticEvent | undefined {
+  const path = call.path.split(/[?#]/)[0] ?? call.path;
+  if (!METHODS.has(call.method) || !path.startsWith("/v1/tenants/") || path.length > MAX_PATH) {
+    return undefined;
+  }
+  const elapsed = Math.min(MAX_DURATION_MS, Math.max(0, now() - call.startedAt));
   const event: DiagnosticEvent = {
     client: "typescript",
     client_version: SDK_VERSION,
     method: call.method,
-    path: call.path.split(/[?#]/)[0] ?? call.path,
+    path,
     outcome: "success",
-    duration_ms: Math.max(0, Math.round((now() - call.startedAt) * 1000) / 1000),
+    duration_ms: Math.round(elapsed * 1000) / 1000,
     logical_request_id: call.logicalRequestId,
     attempt: 1,
   };
@@ -122,7 +133,8 @@ export class DiagnosticsQueue {
 
   constructor(private readonly send: (batch: DiagnosticEvent[]) => Promise<void>) {}
 
-  push(event: DiagnosticEvent): void {
+  push(event: DiagnosticEvent | undefined): void {
+    if (!event) return;
     if (this.events.length >= MAX_QUEUE) {
       this.events.shift();
       this.dropped += 1;

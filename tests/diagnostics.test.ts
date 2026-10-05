@@ -3,7 +3,13 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiError, OriginChainClient, type FetchLike } from "../src/index.js";
-import { DiagnosticsQueue, SDK_VERSION, type DiagnosticEvent } from "../src/diagnostics.js";
+import {
+  DiagnosticsQueue,
+  SDK_VERSION,
+  diagnosticEvent,
+  now,
+  type DiagnosticEvent,
+} from "../src/diagnostics.js";
 import pkg from "../package.json";
 
 const BASE = "https://tnt-test.ap-south-1.db.originchain.ai";
@@ -172,6 +178,22 @@ describe("diagnostics", () => {
     const oc = new OriginChainClient({ baseUrl: BASE, bearer: BEARER, fetch, diagnostics: true });
     await expect(oc.sql("SELECT 1")).resolves.toMatchObject({ kind: "select" });
     await expect(oc.flushDiagnostics()).resolves.toBeUndefined();
+  });
+
+  it("never queue an event that would make the engine refuse a whole batch", () => {
+    const base = {
+      path: "/v1/tenants/t/sql",
+      startedAt: now(),
+      logicalRequestId: "8fb1dce6-72c0-4aa5-8d46-50a4e0b47ba5",
+      status: 200,
+    };
+    expect(diagnosticEvent({ ...base, method: "HEAD" })).toBeUndefined();
+    expect(diagnosticEvent({ ...base, method: "GET", path: "/v1/version" })).toBeUndefined();
+    expect(
+      diagnosticEvent({ ...base, method: "GET", path: `/v1/tenants/${"x".repeat(600)}` }),
+    ).toBeUndefined();
+    const old = diagnosticEvent({ ...base, method: "GET", startedAt: now() - 7_200_000 });
+    expect(old!.duration_ms).toBe(3_600_000);
   });
 
   it("bound the queue, dropping the oldest events", () => {
