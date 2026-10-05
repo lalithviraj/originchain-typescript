@@ -3,6 +3,22 @@
 All notable changes to `@originchain/sdk`. See the repo-root `CHANGELOG.md`
 for engine releases.
 
+## [Unreleased]
+
+### Added
+
+- **Request ids on every error.** `ApiError.requestId` is the engine's id for
+  the request (`x-oc-request-id`), to quote in a support request.
+  `ApiError.logicalRequestId` is the id the client sent.
+- **Request correlation.** Every call sends `x-oc-logical-request-id` (a fresh
+  UUID) and `x-oc-attempt: 1`, which the engine records next to its own request
+  id. Not sent from a browser, so a browser never depends on an engine whose
+  CORS allow-list predates these headers.
+- **Opt-in diagnostics** (`diagnostics: true`, default off): the client reports
+  each call's method, path, outcome, duration, status and request ids to your own
+  engine, which keeps only the route template. See the README's "Diagnostics"
+  section. `flushDiagnostics()` sends anything queued.
+
 ## [0.4.1] - 2026-09-07
 
 ### Changed

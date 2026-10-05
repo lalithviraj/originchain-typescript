@@ -448,6 +448,12 @@ export type ClientOptions = {
    * derives `tenant_id` from the first DNS label of `baseUrl` by default -
    * pass this explicitly for non-standard hostnames or local dev. */
   tenantId?: string;
+  /** Opt-in client diagnostics. Default `false`: nothing is reported. When
+   * `true`, the client reports each call's method, path, outcome, duration,
+   * status and request ids to your own engine, which keeps only the route
+   * template. No SQL, parameters, row data, search text or error messages are
+   * ever sent. See the README's "Diagnostics" section. */
+  diagnostics?: boolean;
 };
 
 export type AdminClientOptions = {

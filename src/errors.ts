@@ -12,6 +12,11 @@ export type ApiErrorBody = {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  /** The engine's id for the request (`x-oc-request-id`), when it answered with
+   * one. Quote it in a support request: it identifies the exact engine record. */
+  requestId?: string;
+  /** The id this client sent for the call (`x-oc-logical-request-id`). */
+  logicalRequestId?: string;
 
   constructor(status: number, code: string, message: string) {
     super(message);
