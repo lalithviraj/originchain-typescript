@@ -5,6 +5,8 @@ for engine releases.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-07
+
 ### Fixed
 
 - **Browser workers no longer send the correlation headers.** A web, shared or
