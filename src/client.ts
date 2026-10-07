@@ -17,6 +17,14 @@ import {
   OCAddonRequiredError,
   OCPaymentRequiredError,
 } from "./errors.js";
+import {
+  DIAGNOSTICS_PATH_SUFFIX,
+  type DiagnosticEvent,
+  DiagnosticsQueue,
+  diagnosticEvent,
+  engineRequestId,
+  now,
+} from "./diagnostics.js";
 import type {
   AddonEnableResponse,
   AddonRow,
@@ -160,6 +168,12 @@ function newIdempotencyKey(): string {
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
+/** True in a browser (or a browser-like worker with a DOM), where every custom
+ * request header must be on the engine's CORS allow-list. */
+function inBrowser(): boolean {
+  return typeof (globalThis as { document?: unknown }).document !== "undefined";
+}
+
 async function readBody(res: Response): Promise<unknown> {
   if (res.status === 204) return undefined;
   const text = await res.text();
@@ -222,6 +236,7 @@ export class OriginChainClient {
 
   private readonly fetch: FetchLike;
   private readonly timeoutMs: number;
+  private readonly diagnostics: DiagnosticsQueue | undefined;
 
   constructor(opts: ClientOptions) {
     if (!opts.baseUrl) throw new Error("OriginChainClient: baseUrl required");
@@ -235,6 +250,38 @@ export class OriginChainClient {
     // service; later calls hit a 5-min response cache on the backend.
     this.timeoutMs = opts.timeoutMs ?? 60000;
     this.graph = new GraphMethods(this);
+    this.diagnostics = opts.diagnostics
+      ? new DiagnosticsQueue((batch) => this.sendDiagnostics(batch))
+      : undefined;
+  }
+
+  /** Send any queued diagnostics now (for example before a serverless function
+   * returns). A no-op when diagnostics are off. Never throws. */
+  async flushDiagnostics(): Promise<void> {
+    await this.diagnostics?.flush();
+  }
+
+  /** Post one diagnostics batch straight to the engine: not through `_request`,
+   * so reporting never reports itself and never adds correlation headers. */
+  private async sendDiagnostics(batch: DiagnosticEvent[]): Promise<void> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      await this.fetch(
+        joinUrl(this.baseUrl, `/v1/tenants/${this.tenantId}${DIAGNOSTICS_PATH_SUFFIX}`),
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.bearer}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ events: batch }),
+          signal: ctrl.signal,
+        },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // ── Internal request plumbing ──────────────────────────────────────────
@@ -260,17 +307,74 @@ export class OriginChainClient {
     if (MUTATING_METHODS.has(method) && !headers["idempotency-key"]) {
       headers["idempotency-key"] = newIdempotencyKey();
     }
+    // Correlation: one id per call, recorded by the engine next to its own
+    // request id. The client does not retry, so every call is attempt 1.
+    // Not sent from a browser: they are custom headers, so an engine whose CORS
+    // allow-list predates them would refuse the preflight and every call would
+    // fail. A browser still gets the engine's own `x-oc-request-id` on errors.
+    // A caller's own id is kept when it is a UUID; the engine ignores anything
+    // else, so diagnostics then carry a fresh one instead.
+    const supplied = headers["x-oc-logical-request-id"];
+    const logicalRequestId =
+      supplied && UUID_RE.test(supplied) ? supplied.toLowerCase() : newIdempotencyKey();
+    if (!inBrowser()) {
+      headers["x-oc-logical-request-id"] ??= logicalRequestId;
+      headers["x-oc-attempt"] ??= "1";
+    }
+    const report = this.diagnostics;
+    const startedAt = now();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
       const { rawBody: _rawBody, ...fetchInit } = init;
-      const res = await this.fetch(joinUrl(this.baseUrl, path), {
-        ...fetchInit,
-        headers,
-        signal: ctrl.signal,
-      });
+      let res: Response;
+      try {
+        res = await this.fetch(joinUrl(this.baseUrl, path), {
+          ...fetchInit,
+          headers,
+          signal: ctrl.signal,
+        });
+      } catch (err) {
+        report?.push(
+          diagnosticEvent({
+            method,
+            path,
+            startedAt,
+            logicalRequestId,
+            failure: ctrl.signal.aborted ? "timeout" : "network",
+          }),
+        );
+        throw err;
+      }
+      const requestId = engineRequestId(res.headers.get("x-oc-request-id"));
       const body = await readBody(res);
-      if (!res.ok) raiseFor(res.status, body);
+      if (!res.ok) {
+        try {
+          raiseFor(res.status, body);
+        } catch (err) {
+          if (err instanceof ApiError) {
+            err.requestId = requestId;
+            err.logicalRequestId = logicalRequestId;
+          }
+          report?.push(
+            diagnosticEvent({
+              method,
+              path,
+              startedAt,
+              logicalRequestId,
+              status: res.status,
+              requestId,
+              // `http_error` is this client's placeholder, not a code the engine sent.
+              errorCode:
+                err instanceof ApiError && err.code !== "http_error" ? err.code : undefined,
+            }),
+          );
+          throw err;
+        }
+      }
+      report?.push(
+        diagnosticEvent({ method, path, startedAt, logicalRequestId, status: res.status, requestId }),
+      );
       return body as T;
     } finally {
       clearTimeout(timer);

@@ -46,6 +46,7 @@ expressions like `SELECT 1`.
 | `bearer`    | yes      | `Authorization: Bearer …` token.                                   |
 | `tenantId`  | no       | Auto-derived from `baseUrl`'s hostname; set it only when the host doesn't carry the tenant id (e.g. behind a custom gateway). |
 | `timeoutMs` | no       | Per-request timeout (default 30000).                               |
+| `diagnostics` | no     | Opt-in client diagnostics (default `false`). See [Diagnostics](#diagnostics). |
 
 ## Two clients
 
@@ -136,7 +137,7 @@ try {
   if (e instanceof OCAddonRequiredError) {
     console.log(`Enable ${e.addonName} ($${e.monthlyUsd}/mo): ${e.purchaseUrl}`);
   } else if (e instanceof ApiError) {
-    console.error(`HTTP ${e.status} ${e.code}: ${e.message}`);
+    console.error(`HTTP ${e.status} ${e.code}: ${e.message} (request ${e.requestId})`);
   } else {
     throw e;
   }
@@ -145,6 +146,43 @@ try {
 
 `OCAddonRequiredError` is a subclass of `ApiError`, so an unconditional
 `instanceof ApiError` catch still matches.
+
+Every `ApiError` carries two ids:
+
+- `requestId` is the engine's id for the request (`x-oc-request-id`). Include it
+  in a support request: it identifies the exact record on your engine.
+- `logicalRequestId` is the id the client sent with the call
+  (`x-oc-logical-request-id`, a UUID). The engine records it next to its own id,
+  so you can also log it on your side before the response arrives.
+
+From a browser the client does not send `x-oc-logical-request-id`, so
+`logicalRequestId` is not recorded by the engine there; `requestId` still is.
+
+## Diagnostics
+
+Diagnostics are off by default. Turn them on to let OriginChain support see what
+your application saw of its calls, not only what the engine saw:
+
+```ts
+const oc = new OriginChainClient({ baseUrl, bearer, diagnostics: true });
+```
+
+With diagnostics on, the client reports each call to your own engine, with
+your bearer token, in the background:
+
+- the method and path, the outcome and duration;
+- the HTTP status received, or that no response arrived;
+- the request ids above, and the error code when the engine returned one.
+
+The engine keeps only its route template for the path (for example
+`/v1/tenants/:tenant/vector/:table/topk`), so table, key and index names stay on
+your engine. Query strings are removed before anything is queued. SQL,
+parameters, row data, search text, error messages and keys are never sent.
+
+Reporting never slows or fails your calls. Reports wait in a small bounded
+queue and are sent at most once a second; a report that cannot be sent is
+dropped. In a short-lived process, such as a serverless function, call
+`await oc.flushDiagnostics()` before it returns.
 
 ## Custom fetch (testing)
 
