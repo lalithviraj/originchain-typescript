@@ -5,6 +5,8 @@ for engine releases.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-07
+
 ### Added
 
 - **Request ids on every error.** `ApiError.requestId` is the engine's id for
